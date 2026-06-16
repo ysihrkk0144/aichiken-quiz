@@ -1,10 +1,11 @@
-var CACHE_NAME = 'aichi-quiz-v1';
+var CACHE_NAME = 'aichi-quiz-v2';
 var ASSETS = [
-  './aichikenquiz.html',
+  './index.html',
   './manifest.json',
   './service-worker.js',
   './aichi.topojson',
-  './icon.svg'
+  './icon-192.png',
+  './icon-512.png'
 ];
 
 self.addEventListener('install', function(event) {

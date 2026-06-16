@@ -2,7 +2,7 @@
   "name": "愛知県市町村シルエットクイズ",
   "short_name": "愛知クイズ",
   "description": "愛知県の市町村シルエットを当てるクイズアプリ",
-  "start_url": "./aichikenquiz.html",
+  "start_url": "./index.html",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#ffffff",
@@ -10,9 +10,15 @@
   "lang": "ja",
   "icons": [
     {
-      "src": "icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]
