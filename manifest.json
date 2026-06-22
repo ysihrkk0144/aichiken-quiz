@@ -1,12 +1,13 @@
 {
-  "name": "愛知県市町村シルエットクイズ",
-  "short_name": "愛知クイズ",
+  "name": "愛知県クイズ",
+  "short_name": "愛知県クイズ",
   "description": "愛知県の市町村シルエットを当てるクイズアプリ",
-  "start_url": "./index.html",
+  "start_url": "./",
+  "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#ffffff",
-  "theme_color": "#6c5ce7",
+  "theme_color": "#1a55b4",
   "lang": "ja",
   "icons": [
     {
