@@ -448,7 +448,7 @@ body {
 .diag-body {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 18px 100px;
+  padding: 16px 18px 110px;
 }
 .diag-section {
   margin-bottom: 16px;
@@ -486,7 +486,7 @@ body {
   color: #b8b8d0;
   line-height: 1.7;
   word-break: break-all;
-  max-height: 180px;
+  max-height: 160px;
   overflow-y: auto;
   background: #14141d;
   border-radius: 8px;
@@ -494,24 +494,40 @@ body {
   margin-top: 6px;
 }
 .diag-url-list div { padding: 2px 0; }
+.diag-fail-list {
+  font-size: 11px;
+  color: #ffb8b8;
+  line-height: 1.7;
+  word-break: break-all;
+  max-height: 140px;
+  overflow-y: auto;
+  background: #2a1818;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 6px;
+}
+.diag-fail-list div { padding: 3px 0; border-bottom: 1px solid #3a2222; }
+.diag-fail-list div:last-child { border-bottom: none; }
 .diag-actions {
   position: fixed;
   left: 0; right: 0; bottom: 0;
   z-index: 9600;
   display: flex;
-  gap: 10px;
-  padding: 14px 18px calc(14px + env(safe-area-inset-bottom));
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
   background: #1f1f2c;
   border-top: 1px solid #34344a;
 }
 .diag-actions button {
-  flex: 1;
-  padding: 13px;
+  flex: 1 1 calc(50% - 4px);
+  min-width: 130px;
+  padding: 12px 8px;
   border-radius: 10px;
   border: none;
   font-weight: 900;
-  font-size: 13px;
-  letter-spacing: 0.03em;
+  font-size: 12px;
+  letter-spacing: 0.02em;
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
@@ -522,6 +538,11 @@ body {
 .diag-actions .btn-checkupdate {
   background: var(--primary);
   color: #fff;
+}
+.diag-actions .btn-cachenow {
+  background: #06b88a;
+  color: #053b2c;
+  flex: 1 1 100%;
 }
 </style>
 </head>
@@ -602,6 +623,7 @@ body {
   <div class="diag-actions">
     <button class="btn-refresh" id="diag-refresh-btn">🔄 再取得</button>
     <button class="btn-checkupdate" id="diag-checkupdate-btn">🌐 最新版を確認</button>
+    <button class="btn-cachenow" id="diag-cachenow-btn">📥 キャッシュを今すぐ手動で再取得する</button>
   </div>
 </div>
 
@@ -926,6 +948,24 @@ document.getElementById('retry-btn').addEventListener('click', retryQuiz);
 
 var swRegistration = null;
 var EXPECTED_ASSET_COUNT = 5; // index.html, manifest.json, aichi.topojson, icon-192.png, icon-512.png
+var persistGranted = null; // null=未取得, true/false=取得済み
+var lastFailDetails = [];  // 直近のキャッシュ失敗詳細
+
+// ─── ストレージ永続化リクエスト ───
+function requestStoragePersist() {
+  if (navigator.storage && navigator.storage.persist) {
+    navigator.storage.persist().then(function(granted) {
+      persistGranted = granted;
+      console.log('[Page] storage.persist() 結果:', granted);
+      paintDiagnosticPanel();
+    }).catch(function(err) {
+      persistGranted = false;
+      console.warn('[Page] storage.persist() 失敗:', err);
+    });
+  } else {
+    persistGranted = false; // 非対応
+  }
+}
 
 // ─── キャッシュ完了バナー表示 ───
 function showCacheBanner(ok, msg) {
@@ -952,15 +992,31 @@ function hideUpdateBanner() {
   document.getElementById('update-banner').classList.remove('show');
 }
 
+// ─── 「今すぐ手動で再取得」のタイムアウト監視用 ───
+var cacheNowTimer = null;
+
 // ─── SW からのメッセージ受信 ───
 function handleSWMessage(event) {
   var data = event.data || {};
 
   if (data.type === 'INSTALL_RESULT') {
+    lastFailDetails = data.failedDetails || [];
     if (data.failCount === 0) {
       showCacheBanner(true, '✅ オフライン準備完了！ (' + data.successCount + '/' + data.expected + '件)');
     } else {
       showCacheBanner(false, '⚠️ 一部未保存 (' + data.successCount + '/' + data.expected + '件、失敗' + data.failCount + '件)');
+    }
+    refreshDiagnostic();
+    return;
+  }
+
+  if (data.type === 'CACHE_NOW_RESULT') {
+    clearTimeout(cacheNowTimer);
+    lastFailDetails = data.failedDetails || [];
+    if (data.failCount === 0) {
+      showCacheBanner(true, '✅ 手動再取得 完了！ (' + data.successCount + '/' + data.expected + '件)');
+    } else {
+      showCacheBanner(false, '⚠️ 手動再取得 一部失敗 (' + data.successCount + '/' + data.expected + '件、失敗' + data.failCount + '件)');
     }
     refreshDiagnostic();
     return;
@@ -974,6 +1030,14 @@ function handleSWMessage(event) {
   if (data.type === 'DIAGNOSTIC_RESULT') {
     renderDiagnostic(data);
     return;
+  }
+}
+
+// ─── ページロード時：waitingの存在チェック（updatefound以外の検知経路） ───
+function checkExistingWaiting(reg) {
+  if (reg && reg.waiting && navigator.serviceWorker.controller) {
+    // すでに新しいSWがwaiting状態 → 即座に更新バナー表示
+    showUpdateBanner();
   }
 }
 
@@ -993,13 +1057,15 @@ function registerSW() {
     swRegistration = reg;
     console.log('[Page] SW登録成功 scope=', reg.scope);
 
-    // 新しいSWが見つかってインストールされたら通知バナーを出す
+    // ① ページロード時点でwaitingが既に存在するケースを検知
+    checkExistingWaiting(reg);
+
+    // ② updatefoundイベントでも検知（両方実装）
     reg.addEventListener('updatefound', function() {
       var newWorker = reg.installing;
       if (!newWorker) return;
       newWorker.addEventListener('statechange', function() {
         if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-          // 既にcontrollerがいる状態でinstalled = 新バージョン待機中
           showUpdateBanner();
         }
       });
@@ -1027,7 +1093,9 @@ function manualCheckUpdate() {
     return;
   }
   swRegistration.update().then(function() {
-    console.log('[Page] update() 完了（updatefoundが発火していれば新版あり）');
+    console.log('[Page] update() 完了');
+    // updateの結果でwaitingが立つケースもここで再チェック
+    checkExistingWaiting(swRegistration);
     refreshDiagnostic();
   }).catch(function(err) {
     console.warn('[Page] update() 失敗:', err);
@@ -1050,6 +1118,42 @@ document.getElementById('update-now-btn').addEventListener('click', function() {
 document.getElementById('update-later-btn').addEventListener('click', function() {
   hideUpdateBanner();
 });
+
+// ─── 「📥 キャッシュを今すぐ手動で再取得する」ボタン ───
+function manualCacheNow() {
+  if (!('serviceWorker' in navigator)) {
+    alert('Service Worker非対応のため実行できません。');
+    return;
+  }
+  var target = navigator.serviceWorker.controller ||
+               (swRegistration && swRegistration.active);
+  if (!target) {
+    alert('有効なService Workerが見つかりません。古いSWが原因の可能性があります。');
+    return;
+  }
+
+  var responded = false;
+  cacheNowTimer = setTimeout(function() {
+    if (!responded) {
+      alert('3秒以内に応答がありませんでした。古いSWが原因の可能性があります。診断パネルでSWの状態を確認してください。');
+    }
+  }, 3000);
+
+  // メッセージ受信側でクリアするためのフラグ管理
+  var origHandler = handleSWMessage;
+  var wrapped = function(event) {
+    if (event.data && event.data.type === 'CACHE_NOW_RESULT') {
+      responded = true;
+    }
+    origHandler(event);
+  };
+  navigator.serviceWorker.removeEventListener('message', handleSWMessage);
+  navigator.serviceWorker.addEventListener('message', wrapped);
+  handleSWMessage = wrapped;
+
+  target.postMessage({ type: 'CACHE_NOW' });
+}
+document.getElementById('diag-cachenow-btn').addEventListener('click', manualCacheNow);
 
 // ============================================================
 // 診断パネル
@@ -1107,7 +1211,17 @@ function refreshDiagnostic() {
       reg.active.postMessage({ type: 'GET_DIAGNOSTIC' });
     }
 
-    renderDiagnosticBase(swState);
+    // ストレージ永続化の許可有無も併せて確認
+    if (navigator.storage && navigator.storage.persisted) {
+      navigator.storage.persisted().then(function(p) {
+        persistGranted = p;
+        renderDiagnosticBase(swState);
+      }).catch(function() {
+        renderDiagnosticBase(swState);
+      });
+    } else {
+      renderDiagnosticBase(swState);
+    }
   }).catch(function(err) {
     console.warn('[Page] 診断取得失敗:', err);
   });
@@ -1134,11 +1248,17 @@ function paintDiagnosticPanel() {
   var controllerClass = sw.hasController ? 'ok' : 'bad';
   var controllerText  = sw.hasController ? 'あり' : 'なし（要注意）';
 
+  var persistClass = (persistGranted === true) ? 'ok' : (persistGranted === false ? 'warn' : '');
+  var persistText  = (persistGranted === true) ? '許可済み'
+                    : (persistGranted === false) ? '未許可（ブラウザ依存）'
+                    : '取得中...';
+
   var html = '';
 
   html += '<div class="diag-section"><h3>環境情報</h3>';
   html += diagRow('現在のURL', escapeHTML(location.href));
   html += diagRow('Service Worker対応', ('serviceWorker' in navigator) ? '対応' : '非対応', ('serviceWorker' in navigator) ? 'ok' : 'bad');
+  html += diagRow('ストレージ永続化', persistText, persistClass);
   html += '</div>';
 
   html += '<div class="diag-section"><h3>SW登録状態</h3>';
@@ -1164,6 +1284,19 @@ function paintDiagnosticPanel() {
     html += '</div>';
   }
 
+  html += '<div class="diag-section"><h3>直近のキャッシュ取得 失敗詳細</h3>';
+  if (lastFailDetails.length === 0) {
+    html += diagRow('状態', '失敗なし（または未実行）', 'ok');
+  } else {
+    html += diagRow('失敗件数', lastFailDetails.length + ' 件', 'bad');
+    html += '<div class="diag-fail-list">' +
+      lastFailDetails.map(function(f) {
+        return '<div>' + escapeHTML(f.url) + '<br>→ ' + escapeHTML(f.error) + '</div>';
+      }).join('') +
+      '</div>';
+  }
+  html += '</div>';
+
   body.innerHTML = html;
 }
 
@@ -1173,6 +1306,7 @@ function diagRow(key, value, valueClass) {
 }
 
 // ─── 起動 ───
+requestStoragePersist();
 registerSW();
 loadData();
 </script>

@@ -3,7 +3,7 @@
 // 方針: 完全オフライン優先 (Cache Only) + 手動更新のみ
 // ============================================================
 
-var CACHE_NAME = 'aichi-quiz-v4';
+var CACHE_NAME = 'aichi-quiz-v5';
 
 // service-worker.js 自体はキャッシュ対象に含めない
 // './' と './index.html' の重複も入れない（index.html に一本化）
@@ -23,12 +23,15 @@ var NAV_URL = new URL('./index.html', self.location).href;
 
 var EXPECTED_COUNT = ASSET_URLS.length;
 
-// ─── リトライ付きfetch（最大3回） ───
+// ─── リトライ付きfetch（最大3回、'no-store'とデフォルトを交互に試す） ───
+// 'reload'のみだとモバイル端末で不安定なため使用しない
 function fetchWithRetry(url, maxRetry) {
   var attempt = 0;
   function tryFetch() {
     attempt++;
-    return fetch(url, { cache: 'no-store' }).then(function(res) {
+    // 奇数回目: no-store / 偶数回目: デフォルト(キャッシュオプション無し)
+    var opts = (attempt % 2 === 1) ? { cache: 'no-store' } : {};
+    return fetch(url, opts).then(function(res) {
       if (!res.ok) throw new Error('HTTP ' + res.status);
       return res;
     }).catch(function(err) {
@@ -50,38 +53,43 @@ function notifyClients(payload) {
   });
 }
 
+// ─── 個別キャッシュ実行（install / CACHE_NOW 共通ロジック） ───
+function cacheAllAssets(notifyType) {
+  return caches.open(CACHE_NAME).then(function(cache) {
+    var successList = [];
+    var failDetails = []; // { url, error }
+
+    return Promise.allSettled(
+      ASSET_URLS.map(function(url) {
+        return fetchWithRetry(url, 3).then(function(res) {
+          return cache.put(url, res).then(function() {
+            successList.push(url);
+          });
+        }).catch(function(err) {
+          failDetails.push({ url: url, error: String(err && err.message ? err.message : err) });
+          console.warn('[SW] キャッシュ失敗(リトライ後):', url, err);
+        });
+      })
+    ).then(function() {
+      return notifyClients({
+        type: notifyType,
+        cacheName: CACHE_NAME,
+        expected: EXPECTED_COUNT,
+        successCount: successList.length,
+        failCount: failDetails.length,
+        failedDetails: failDetails
+      });
+    });
+  });
+}
+
 // ============================================================
 // install
 // ============================================================
 self.addEventListener('install', function(event) {
   event.waitUntil(
-    caches.open(CACHE_NAME).then(function(cache) {
-      var successList = [];
-      var failList = [];
-
-      return Promise.allSettled(
-        ASSET_URLS.map(function(url) {
-          return fetchWithRetry(url, 3).then(function(res) {
-            return cache.put(url, res).then(function() {
-              successList.push(url);
-            });
-          }).catch(function(err) {
-            failList.push(url);
-            console.warn('[SW] キャッシュ失敗(リトライ後):', url, err);
-          });
-        })
-      ).then(function() {
-        return notifyClients({
-          type: 'INSTALL_RESULT',
-          cacheName: CACHE_NAME,
-          expected: EXPECTED_COUNT,
-          successCount: successList.length,
-          failCount: failList.length,
-          failedUrls: failList
-        });
-      });
-      // ★ skipWaiting() はここで呼ばない（手動更新方式のため）
-    })
+    cacheAllAssets('INSTALL_RESULT')
+    // ★ skipWaiting() はここで呼ばない（手動更新方式のため）
   );
 });
 
@@ -143,7 +151,7 @@ self.addEventListener('fetch', function(event) {
 });
 
 // ============================================================
-// message（診断 / 手動更新）
+// message（診断 / 手動更新 / 手動再キャッシュ）
 // ============================================================
 self.addEventListener('message', function(event) {
   var data = event.data || {};
@@ -171,6 +179,12 @@ self.addEventListener('message', function(event) {
 
   if (data.type === 'SKIP_WAITING') {
     self.skipWaiting();
+    return;
+  }
+
+  if (data.type === 'CACHE_NOW') {
+    // install時と同じロジックで手動再キャッシュ
+    event.waitUntil(cacheAllAssets('CACHE_NOW_RESULT'));
     return;
   }
 });
